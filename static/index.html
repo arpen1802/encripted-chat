@@ -1,0 +1,1249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EncryptedChat</title>
+<style>
+  :root {
+    --bg:         #0d0d14;
+    --sidebar:    #13131f;
+    --panel:      #181826;
+    --surface:    #1e1e30;
+    --border:     #2a2a40;
+    --accent:     #7c3aed;
+    --accent-h:   #6d28d9;
+    --accent-dim: #3b1f6e;
+    --green:      #10b981;
+    --red:        #ef4444;
+    --yellow:     #f59e0b;
+    --text:       #e2e8f0;
+    --text-dim:   #8892a4;
+    --text-muted: #4a5568;
+    --radius:     8px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; font-family: var(--font); background: var(--bg); color: var(--text); }
+
+  /* ── SCROLLBAR ── */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  /* ── LAYOUT ── */
+  #app { display: flex; height: 100vh; overflow: hidden; }
+  #sidebar { width: 240px; min-width: 240px; background: var(--sidebar); display: flex; flex-direction: column; border-right: 1px solid var(--border); }
+  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #members-panel { width: 220px; min-width: 220px; background: var(--sidebar); border-left: 1px solid var(--border); display: flex; flex-direction: column; }
+
+  /* ── SCREENS ── */
+  .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--bg); z-index: 100; }
+  .screen.hidden { display: none; }
+
+  /* ── LOGIN ── */
+  .login-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 40px;
+    width: 380px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  }
+  .login-card .logo { display: flex; align-items: center; gap: 10px; margin-bottom: 28px; }
+  .login-card .logo svg { width: 36px; height: 36px; }
+  .login-card .logo span { font-size: 1.4rem; font-weight: 700; background: linear-gradient(135deg, #7c3aed, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .login-card h2 { font-size: 1.1rem; color: var(--text-dim); font-weight: 400; margin-bottom: 28px; }
+  .form-group { margin-bottom: 16px; }
+  .form-group label { display: block; font-size: .8rem; color: var(--text-dim); margin-bottom: 6px; font-weight: 500; letter-spacing: .04em; text-transform: uppercase; }
+  input, textarea, select {
+    width: 100%; padding: 10px 14px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    color: var(--text); font-size: .9rem; font-family: var(--font);
+    outline: none; transition: border-color .2s;
+  }
+  input:focus, textarea:focus { border-color: var(--accent); }
+  .btn {
+    padding: 10px 20px; border: none; border-radius: var(--radius);
+    font-size: .9rem; font-weight: 600; cursor: pointer; transition: all .15s;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .btn-primary { background: var(--accent); color: #fff; width: 100%; justify-content: center; }
+  .btn-primary:hover { background: var(--accent-h); }
+  .btn-primary:disabled { opacity: .6; cursor: not-allowed; }
+  .btn-sm { padding: 6px 12px; font-size: .8rem; }
+  .btn-ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
+  .btn-ghost:hover { background: var(--surface); color: var(--text); }
+  .btn-danger { background: var(--red); color: #fff; }
+  .btn-danger:hover { background: #dc2626; }
+  .error-msg { color: var(--red); font-size: .82rem; margin-top: 12px; display: none; }
+  .error-msg.show { display: block; }
+
+  /* ── MODAL ── */
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 200; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+  .modal-backdrop.hidden { display: none; }
+  .modal { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 28px; width: 460px; max-width: 95vw; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+  .modal h2 { font-size: 1.1rem; margin-bottom: 20px; display: flex; align-items: center; gap: 8px; }
+  .modal-close { margin-left: auto; background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 1.3rem; padding: 0 4px; }
+  .modal-close:hover { color: var(--text); }
+
+  /* ── SIDEBAR ── */
+  .sidebar-header { padding: 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
+  .sidebar-header .workspace-name { font-weight: 700; font-size: .95rem; flex: 1; }
+  .sidebar-header .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+  .sidebar-section { padding: 8px 0; flex: 1; overflow-y: auto; }
+  .sidebar-label { padding: 6px 16px; font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); display: flex; align-items: center; justify-content: space-between; }
+  .sidebar-label button { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1rem; line-height: 1; padding: 0 2px; border-radius: 4px; }
+  .sidebar-label button:hover { color: var(--text); background: var(--surface); }
+  .nav-item { display: flex; align-items: center; gap: 8px; padding: 5px 16px; cursor: pointer; border-radius: 0; font-size: .88rem; color: var(--text-dim); transition: background .1s, color .1s; position: relative; }
+  .nav-item:hover { background: var(--surface); color: var(--text); }
+  .nav-item.active { background: var(--accent-dim); color: #fff; }
+  .nav-item .hash { color: var(--text-muted); font-size: .95rem; }
+  .nav-item .unread { margin-left: auto; background: var(--accent); color: #fff; border-radius: 10px; padding: 1px 6px; font-size: .7rem; font-weight: 700; }
+  .avatar { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: .65rem; font-weight: 700; color: #fff; flex-shrink: 0; }
+  .presence { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; }
+  .presence.online { background: var(--green); }
+  .sidebar-footer { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
+  .sidebar-footer .user-info { flex: 1; min-width: 0; }
+  .sidebar-footer .user-name { font-size: .85rem; font-weight: 600; }
+  .sidebar-footer .user-role { font-size: .72rem; color: var(--text-dim); }
+  .sidebar-footer .icon-btn { background: none; border: none; cursor: pointer; color: var(--text-dim); padding: 4px; border-radius: 4px; }
+  .sidebar-footer .icon-btn:hover { color: var(--text); background: var(--surface); }
+
+  /* ── CHANNEL HEADER ── */
+  #channel-header { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; background: var(--panel); min-height: 56px; }
+  #channel-header .ch-title { font-weight: 700; font-size: 1rem; }
+  #channel-header .ch-desc { font-size: .82rem; color: var(--text-dim); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #channel-header .ch-actions { display: flex; gap: 8px; }
+  #channel-header .icon-btn { background: none; border: none; cursor: pointer; color: var(--text-dim); padding: 6px; border-radius: 6px; }
+  #channel-header .icon-btn:hover { color: var(--text); background: var(--surface); }
+
+  /* ── MESSAGES ── */
+  #messages-area { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 2px; }
+  .msg-group { display: flex; gap: 12px; padding: 6px 0; }
+  .msg-group .avatar { width: 36px; height: 36px; font-size: .85rem; flex-shrink: 0; align-self: flex-start; margin-top: 2px; }
+  .msg-body { flex: 1; min-width: 0; }
+  .msg-meta { display: flex; align-items: baseline; gap: 8px; margin-bottom: 3px; }
+  .msg-sender { font-weight: 600; font-size: .9rem; }
+  .msg-time { font-size: .72rem; color: var(--text-muted); }
+  .msg-text { font-size: .9rem; line-height: 1.55; color: var(--text); word-break: break-word; white-space: pre-wrap; }
+  .msg-encrypted { font-size: .8rem; color: var(--text-muted); font-style: italic; display: flex; align-items: center; gap: 4px; }
+  .msg-file { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-top: 4px; cursor: pointer; text-decoration: none; color: var(--text); font-size: .85rem; transition: background .15s; }
+  .msg-file:hover { background: var(--border); }
+  .msg-separator { text-align: center; color: var(--text-muted); font-size: .75rem; padding: 12px 0; display: flex; align-items: center; gap: 12px; }
+  .msg-separator::before, .msg-separator::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .msg-typing { font-size: .8rem; color: var(--text-dim); font-style: italic; padding: 4px 0; min-height: 24px; }
+
+  /* ── E2E BADGE ── */
+  .e2e-badge { display: inline-flex; align-items: center; gap: 4px; font-size: .72rem; color: var(--green); background: rgba(16,185,129,.1); border: 1px solid rgba(16,185,129,.25); border-radius: 20px; padding: 2px 8px; }
+  .e2e-badge svg { width: 10px; height: 10px; }
+
+  /* ── INPUT AREA ── */
+  #input-area { padding: 12px 20px 16px; border-top: 1px solid var(--border); }
+  .input-wrapper { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; display: flex; align-items: flex-end; gap: 8px; padding: 8px 12px; transition: border-color .2s; }
+  .input-wrapper:focus-within { border-color: var(--accent); }
+  #msg-input { flex: 1; background: none; border: none; color: var(--text); resize: none; font-size: .9rem; font-family: var(--font); max-height: 140px; outline: none; padding: 2px 0; line-height: 1.5; }
+  #msg-input::placeholder { color: var(--text-muted); }
+  .input-btn { background: none; border: none; cursor: pointer; color: var(--text-dim); padding: 4px; border-radius: 6px; display: flex; align-items: center; }
+  .input-btn:hover { color: var(--text); background: var(--border); }
+  .send-btn { background: var(--accent); color: #fff; border: none; border-radius: 6px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background .15s; flex-shrink: 0; }
+  .send-btn:hover { background: var(--accent-h); }
+  .send-btn:disabled { opacity: .5; cursor: not-allowed; }
+  #file-input { display: none; }
+  .file-preview { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--panel); border-radius: 6px; margin-bottom: 8px; font-size: .82rem; }
+  .file-preview.hidden { display: none; }
+  .file-preview .remove-file { margin-left: auto; background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1rem; }
+  .file-preview .remove-file:hover { color: var(--red); }
+
+  /* ── MEMBERS PANEL ── */
+  .members-header { padding: 14px 16px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: .85rem; color: var(--text-dim); }
+  .members-list { padding: 8px; overflow-y: auto; flex: 1; }
+  .member-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; }
+  .member-item .member-name { font-size: .85rem; }
+  .member-item .member-role { font-size: .72rem; color: var(--text-muted); }
+
+  /* ── ADMIN ── */
+  .user-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .user-row:last-child { border-bottom: none; }
+  .user-row .user-detail { flex: 1; min-width: 0; }
+  .user-row .user-detail .uname { font-weight: 600; font-size: .88rem; }
+  .user-row .user-detail .uemail { font-size: .78rem; color: var(--text-dim); }
+  .badge { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: .7rem; font-weight: 600; }
+  .badge-admin { background: var(--accent-dim); color: #a78bfa; }
+  .badge-e2e { background: rgba(16,185,129,.15); color: var(--green); }
+
+  /* ── SETUP SCREEN ── */
+  .setup-card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 40px; width: 460px; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+  .setup-card .lock-icon { font-size: 3rem; margin-bottom: 16px; }
+  .setup-card h2 { font-size: 1.3rem; margin-bottom: 10px; }
+  .setup-card p { color: var(--text-dim); font-size: .9rem; line-height: 1.6; margin-bottom: 24px; }
+  .setup-steps { text-align: left; background: var(--surface); border-radius: var(--radius); padding: 16px; margin-bottom: 24px; }
+  .setup-step { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; font-size: .85rem; }
+  .setup-step:last-child { margin-bottom: 0; }
+  .step-num { width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-size: .75rem; font-weight: 700; flex-shrink: 0; }
+  .progress-bar { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; margin-bottom: 16px; }
+  .progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width .5s ease; }
+
+  /* ── TOASTS ── */
+  #toasts { position: fixed; bottom: 24px; right: 24px; z-index: 999; display: flex; flex-direction: column; gap: 8px; }
+  .toast { padding: 12px 16px; border-radius: var(--radius); font-size: .85rem; max-width: 300px; animation: slideIn .2s ease; display: flex; align-items: center; gap: 8px; }
+  .toast-success { background: #065f46; border: 1px solid #10b981; color: #6ee7b7; }
+  .toast-error { background: #7f1d1d; border: 1px solid #ef4444; color: #fca5a5; }
+  .toast-info { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+  /* ── MISC ── */
+  .divider { height: 1px; background: var(--border); margin: 12px 0; }
+  .flex { display: flex; }
+  .gap-2 { gap: 8px; }
+  .mt-2 { margin-top: 8px; }
+  .text-dim { color: var(--text-dim); }
+  .text-sm { font-size: .82rem; }
+  .empty-state { text-align: center; color: var(--text-muted); padding: 48px 20px; }
+  .empty-state .es-icon { font-size: 2.5rem; margin-bottom: 12px; }
+  .encryption-notice { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 8px; font-size: .75rem; color: var(--green); border-bottom: 1px solid var(--border); background: rgba(16,185,129,.05); }
+  #no-channel { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-muted); gap: 12px; }
+  #no-channel h3 { color: var(--text-dim); font-size: 1.1rem; }
+</style>
+</head>
+<body>
+
+<!-- ── LOGIN SCREEN ── -->
+<div id="login-screen" class="screen">
+  <div class="login-card">
+    <div class="logo">
+      <svg viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect width="36" height="36" rx="10" fill="#7c3aed"/>
+        <path d="M11 15a7 7 0 0 1 14 0v2H11v-2z" fill="white"/>
+        <rect x="9" y="17" width="18" height="12" rx="3" fill="white"/>
+        <circle cx="18" cy="23" r="2" fill="#7c3aed"/>
+      </svg>
+      <span>EncryptedChat</span>
+    </div>
+    <h2>Sign in to your workspace</h2>
+    <div class="form-group">
+      <label>Username</label>
+      <input type="text" id="login-username" placeholder="username" autocomplete="username" autofocus>
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input type="password" id="login-password" placeholder="••••••••" autocomplete="current-password">
+    </div>
+    <button class="btn btn-primary" id="login-btn" onclick="doLogin()">Sign in</button>
+    <div class="error-msg" id="login-error"></div>
+  </div>
+</div>
+
+<!-- ── KEY SETUP SCREEN ── -->
+<div id="setup-screen" class="screen hidden">
+  <div class="setup-card">
+    <div class="lock-icon">🔐</div>
+    <h2>Setting up end-to-end encryption</h2>
+    <p>Your encryption keys are being generated in your browser. Your private key never leaves your device unencrypted.</p>
+    <div class="setup-steps">
+      <div class="setup-step">
+        <div class="step-num">1</div>
+        <div>Generating RSA-OAEP key pair (2048-bit)</div>
+      </div>
+      <div class="setup-step">
+        <div class="step-num">2</div>
+        <div>Deriving key-wrapping key from your password</div>
+      </div>
+      <div class="setup-step">
+        <div class="step-num">3</div>
+        <div>Encrypting private key &amp; uploading public key</div>
+      </div>
+      <div class="setup-step">
+        <div class="step-num">4</div>
+        <div>Distributing channel encryption keys</div>
+      </div>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" id="setup-progress" style="width:0%"></div></div>
+    <div id="setup-status" class="text-dim text-sm">Initializing…</div>
+  </div>
+</div>
+
+<!-- ── MAIN APP ── -->
+<div id="app" style="display:none">
+
+  <!-- SIDEBAR -->
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <div style="width:28px;height:28px;border-radius:7px;background:#7c3aed;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+        <svg width="16" height="16" viewBox="0 0 36 36" fill="none"><path d="M11 15a7 7 0 0 1 14 0v2H11v-2z" fill="white"/><rect x="9" y="17" width="18" height="12" rx="3" fill="white"/></svg>
+      </div>
+      <span class="workspace-name">EncryptedChat</span>
+      <span class="status-dot" title="Connected"></span>
+    </div>
+
+    <div class="sidebar-section" style="overflow-y:auto">
+      <!-- Channels -->
+      <div class="sidebar-label">
+        Channels
+        <button onclick="showNewChannel()" title="New channel">+</button>
+      </div>
+      <div id="channels-list"></div>
+
+      <div class="divider" style="margin:8px 16px"></div>
+
+      <!-- DMs -->
+      <div class="sidebar-label">Direct Messages</div>
+      <div id="dms-list"></div>
+    </div>
+
+    <div class="sidebar-footer">
+      <div id="my-avatar" class="avatar" style="width:32px;height:32px;font-size:.8rem"></div>
+      <div class="user-info">
+        <div class="user-name" id="my-username"></div>
+        <div class="user-role" id="my-role"></div>
+      </div>
+      <button class="icon-btn" onclick="showSettings()" title="Settings">⚙️</button>
+      <button class="icon-btn" id="admin-btn" onclick="showAdmin()" title="Admin panel" style="display:none">🛡️</button>
+    </div>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main id="main">
+    <!-- No-channel placeholder -->
+    <div id="no-channel">
+      <div style="font-size:3rem">💬</div>
+      <h3>Select a channel or DM</h3>
+      <p class="text-sm text-dim">Pick from the left sidebar to start chatting</p>
+    </div>
+
+    <!-- Active chat -->
+    <div id="chat-view" style="display:none;flex-direction:column;height:100%">
+      <div class="encryption-notice">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 1a5 5 0 0 0-5 5v3H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V11a2 2 0 0 0-2-2h-2V6a5 5 0 0 0-5-5zm0 2a3 3 0 0 1 3 3v3H9V6a3 3 0 0 1 3-3zm0 10a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/></svg>
+        End-to-end encrypted · Messages are encrypted in your browser before sending
+      </div>
+      <div id="channel-header">
+        <span id="ch-icon" style="font-size:1.2rem">#</span>
+        <span class="ch-title" id="ch-name"></span>
+        <span class="ch-desc" id="ch-desc"></span>
+        <div class="ch-actions">
+          <button class="icon-btn" id="members-toggle" onclick="toggleMembers()" title="Members">👥</button>
+        </div>
+      </div>
+      <div id="messages-area"></div>
+      <div id="typing-indicator" class="msg-typing" style="padding:0 20px 4px"></div>
+      <div id="input-area">
+        <div class="file-preview hidden" id="file-preview">
+          <span>📎</span><span id="file-preview-name"></span>
+          <button class="remove-file" onclick="clearFile()">✕</button>
+        </div>
+        <div class="input-wrapper">
+          <label class="input-btn" title="Attach file">
+            📎
+            <input type="file" id="file-input" onchange="handleFileSelect(event)">
+          </label>
+          <textarea id="msg-input" rows="1" placeholder="Message…" onkeydown="msgKeydown(event)" oninput="autoResize(this);sendTyping()"></textarea>
+          <button class="send-btn" id="send-btn" onclick="sendMessage()" title="Send">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- MEMBERS PANEL -->
+  <aside id="members-panel">
+    <div class="members-header">Members</div>
+    <div class="members-list" id="members-list"></div>
+  </aside>
+
+</div>
+
+<!-- ── NEW CHANNEL MODAL ── -->
+<div class="modal-backdrop hidden" id="new-channel-modal">
+  <div class="modal">
+    <h2>New Channel <button class="modal-close" onclick="closeModal('new-channel-modal')">✕</button></h2>
+    <div class="form-group"><label>Channel name</label><input type="text" id="nc-name" placeholder="e.g. engineering"></div>
+    <div class="form-group"><label>Description (optional)</label><input type="text" id="nc-desc" placeholder="What's this channel about?"></div>
+    <button class="btn btn-primary" onclick="createChannel()">Create Channel</button>
+  </div>
+</div>
+
+<!-- ── ADMIN MODAL ── -->
+<div class="modal-backdrop hidden" id="admin-modal">
+  <div class="modal" style="width:540px">
+    <h2>Admin Panel <button class="modal-close" onclick="closeModal('admin-modal')">✕</button></h2>
+
+    <div style="border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:20px">
+      <div style="font-weight:600;margin-bottom:12px;font-size:.9rem">Create New User</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div class="form-group" style="margin:0"><label>Username</label><input type="text" id="nu-username" placeholder="username"></div>
+        <div class="form-group" style="margin:0"><label>Email</label><input type="email" id="nu-email" placeholder="user@company.com"></div>
+        <div class="form-group" style="margin:0"><label>Password</label><input type="password" id="nu-password" placeholder="••••••••"></div>
+        <div class="form-group" style="margin:0;display:flex;flex-direction:column;justify-content:flex-end">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:auto;margin-bottom:0;padding-bottom:10px">
+            <input type="checkbox" id="nu-admin" style="width:auto"> Make admin
+          </label>
+        </div>
+      </div>
+      <button class="btn btn-primary mt-2" onclick="adminCreateUser()">Create User</button>
+      <div class="error-msg" id="admin-error"></div>
+    </div>
+
+    <div style="font-weight:600;margin-bottom:12px;font-size:.9rem">Users <span id="user-count" class="text-dim text-sm"></span></div>
+    <div id="admin-users-list"></div>
+  </div>
+</div>
+
+<!-- ── SETTINGS MODAL ── -->
+<div class="modal-backdrop hidden" id="settings-modal">
+  <div class="modal">
+    <h2>Settings <button class="modal-close" onclick="closeModal('settings-modal')">✕</button></h2>
+    <div style="font-weight:600;margin-bottom:12px;font-size:.9rem">Change Password</div>
+    <div class="form-group"><label>Current password</label><input type="password" id="old-pw"></div>
+    <div class="form-group"><label>New password</label><input type="password" id="new-pw"></div>
+    <div class="form-group"><label>Confirm new password</label><input type="password" id="new-pw2"></div>
+    <button class="btn btn-primary" onclick="changePassword()">Update Password</button>
+    <div class="error-msg" id="settings-error"></div>
+    <div class="divider"></div>
+    <button class="btn btn-ghost btn-sm" onclick="logout()">Sign out</button>
+  </div>
+</div>
+
+<!-- ── TOASTS ── -->
+<div id="toasts"></div>
+
+<script>
+"use strict";
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CRYPTO ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+const Crypto = {
+  // Convert between base64 and binary
+  toB64: buf => btoa(String.fromCharCode(...new Uint8Array(buf))),
+  fromB64: b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0)),
+
+  // Derive AES-GCM wrapping key from password + salt
+  async deriveWrappingKey(password, salt) {
+    const raw = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt, iterations: 250000, hash: 'SHA-256' },
+      raw,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['wrapKey', 'unwrapKey']
+    );
+  },
+
+  // Generate RSA-OAEP key pair for wrapping/unwrapping symmetric keys
+  async generateKeyPair() {
+    return crypto.subtle.generateKey(
+      { name: 'RSA-OAEP', modulusLength: 2048, publicExponent: new Uint8Array([1,0,1]), hash: 'SHA-256' },
+      true, ['wrapKey', 'unwrapKey']
+    );
+  },
+
+  async exportPublicKey(key) {
+    return this.toB64(await crypto.subtle.exportKey('spki', key));
+  },
+
+  async importPublicKey(b64) {
+    return crypto.subtle.importKey('spki', this.fromB64(b64),
+      { name: 'RSA-OAEP', hash: 'SHA-256' }, true, ['wrapKey']);
+  },
+
+  // Wrap private key with AES-GCM wrapping key
+  async wrapPrivateKey(privateKey, wrappingKey) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const wrapped = await crypto.subtle.wrapKey('pkcs8', privateKey, wrappingKey, { name: 'AES-GCM', iv });
+    return { wrapped: this.toB64(wrapped), iv: this.toB64(iv) };
+  },
+
+  // Unwrap private key
+  async unwrapPrivateKey(wrappedB64, ivB64, wrappingKey) {
+    return crypto.subtle.unwrapKey(
+      'pkcs8', this.fromB64(wrappedB64), wrappingKey,
+      { name: 'AES-GCM', iv: this.fromB64(ivB64) },
+      { name: 'RSA-OAEP', hash: 'SHA-256' },
+      true, ['unwrapKey']
+    );
+  },
+
+  // Generate AES-GCM symmetric key for a channel / DM
+  async generateSymKey() {
+    return crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+  },
+
+  // Wrap sym key with RSA public key
+  async wrapSymKey(symKey, publicKey) {
+    const wrapped = await crypto.subtle.wrapKey('raw', symKey, publicKey, { name: 'RSA-OAEP' });
+    return this.toB64(wrapped);
+  },
+
+  // Unwrap sym key with RSA private key
+  async unwrapSymKey(wrappedB64, privateKey) {
+    return crypto.subtle.unwrapKey(
+      'raw', this.fromB64(wrappedB64), privateKey,
+      { name: 'RSA-OAEP' },
+      { name: 'AES-GCM', length: 256 },
+      true, ['encrypt', 'decrypt']
+    );
+  },
+
+  // Encrypt plaintext with AES-GCM key
+  async encrypt(symKey, plaintext) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, symKey, new TextEncoder().encode(plaintext));
+    return { encrypted: this.toB64(ct), iv: this.toB64(iv) };
+  },
+
+  // Decrypt ciphertext
+  async decrypt(symKey, encB64, ivB64) {
+    const pt = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: this.fromB64(ivB64) },
+      symKey, this.fromB64(encB64)
+    );
+    return new TextDecoder().decode(pt);
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+const S = {
+  token:       null,
+  me:          null,
+  password:    null,           // kept in memory for key ops
+  privateKey:  null,           // CryptoKey — never leaves JS heap
+  publicKey:   null,           // CryptoKey
+  channelKeys: {},             // cid → CryptoKey
+  dmKeys:      {},             // userId → CryptoKey
+  channels:    [],
+  users:       [],
+  activeType:  null,           // 'channel' | 'dm'
+  activeId:    null,
+  unread:      {},             // id → count
+  typingTimers:{},
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// API HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+const api = {
+  async req(method, path, body) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (S.token) headers['Authorization'] = `Bearer ${S.token}`;
+    const res = await fetch(`/api${path}`, {
+      method,
+      headers,
+      body: body != null ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
+      throw new Error(err.detail || res.statusText);
+    }
+    return res.json();
+  },
+  get:    (p)    => api.req('GET', p),
+  post:   (p, b) => api.req('POST', p, b),
+  delete: (p)    => api.req('DELETE', p),
+
+  async upload(file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    const res = await fetch('/api/files', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${S.token}` },
+      body: fd,
+    });
+    if (!res.ok) throw new Error('Upload failed');
+    return res.json();
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WEBSOCKET
+// ═══════════════════════════════════════════════════════════════════════════════
+let ws, wsReconnect;
+function connectWS() {
+  clearTimeout(wsReconnect);
+  ws = new WebSocket(`ws://${location.host}/ws/${S.token}`);
+  ws.onmessage = e => handleWS(JSON.parse(e.data));
+  ws.onclose   = () => { wsReconnect = setTimeout(connectWS, 3000); };
+  ws.onerror   = () => ws.close();
+
+  // Keepalive ping every 25s
+  setInterval(() => { if (ws.readyState === 1) ws.send(JSON.stringify({type:'ping'})); }, 25000);
+}
+
+function handleWS(msg) {
+  switch (msg.type) {
+    case 'channel_msg':
+      if (S.activeType === 'channel' && S.activeId === msg.message.channel_id) {
+        appendMessage(msg.message, 'channel');
+      } else {
+        const cid = msg.message.channel_id;
+        S.unread[cid] = (S.unread[cid] || 0) + 1;
+        renderChannels();
+      }
+      break;
+    case 'dm_msg': {
+      const other = msg.message.sender_id === S.me.id ? msg.message.recipient_id : msg.message.sender_id;
+      if (S.activeType === 'dm' && S.activeId === other) {
+        appendMessage(msg.message, 'dm');
+      } else if (msg.message.sender_id !== S.me.id) {
+        S.unread[other] = (S.unread[other] || 0) + 1;
+        renderDMs();
+        toast(`📨 DM from ${msg.message.sender_name}`, 'info');
+      }
+      break;
+    }
+    case 'presence':
+      updatePresence(msg.user_id, msg.online);
+      break;
+    case 'typing':
+      showTyping(msg);
+      break;
+    case 'user_created':
+      S.users.push(msg.user);
+      renderDMs();
+      break;
+    case 'user_deleted':
+      S.users = S.users.filter(u => u.id !== msg.user_id);
+      renderDMs();
+      break;
+    case 'channel_created':
+      S.channels.push(msg.channel);
+      renderChannels();
+      break;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOGIN
+// ═══════════════════════════════════════════════════════════════════════════════
+async function doLogin() {
+  const username = document.getElementById('login-username').value.trim();
+  const password = document.getElementById('login-password').value;
+  const btn = document.getElementById('login-btn');
+  const err = document.getElementById('login-error');
+
+  if (!username || !password) { showErr(err, 'Please enter username and password'); return; }
+  btn.disabled = true; btn.textContent = 'Signing in…';
+  err.classList.remove('show');
+
+  try {
+    const fd = new FormData();
+    fd.append('username', username); fd.append('password', password);
+    const res = await fetch('/api/token', { method:'POST', body: fd });
+    if (!res.ok) throw new Error((await res.json()).detail);
+    const data = await res.json();
+    S.token    = data.access_token;
+    S.me       = data.user;
+    S.password = password;
+
+    document.getElementById('login-screen').classList.add('hidden');
+
+    if (!S.me.has_keys) {
+      await setupEncryption();
+    } else {
+      await loadPrivateKey();
+    }
+    await initApp();
+  } catch (e) {
+    showErr(err, e.message);
+    btn.disabled = false; btn.textContent = 'Sign in';
+  }
+}
+
+document.getElementById('login-password').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// KEY SETUP (first time)
+// ═══════════════════════════════════════════════════════════════════════════════
+async function setupEncryption() {
+  const screen   = document.getElementById('setup-screen');
+  const progress = document.getElementById('setup-progress');
+  const status   = document.getElementById('setup-status');
+  screen.classList.remove('hidden');
+
+  const setP = (pct, msg) => { progress.style.width = pct+'%'; status.textContent = msg; };
+
+  setP(10, 'Generating RSA-OAEP key pair…');
+  const kp = await Crypto.generateKeyPair();
+  S.privateKey = kp.privateKey;
+  S.publicKey  = kp.publicKey;
+
+  setP(35, 'Deriving key-wrapping key from password…');
+  const salt        = crypto.getRandomValues(new Uint8Array(16));
+  const wrappingKey = await Crypto.deriveWrappingKey(S.password, salt);
+
+  setP(55, 'Wrapping private key…');
+  const { wrapped, iv } = await Crypto.wrapPrivateKey(kp.privateKey, wrappingKey);
+  const pubB64 = await Crypto.exportPublicKey(kp.publicKey);
+
+  setP(70, 'Uploading public key to server…');
+  await api.post('/keys', {
+    public_key:   pubB64,
+    wrapped_priv: wrapped,
+    priv_iv:      iv,
+    priv_salt:    Crypto.toB64(salt),
+  });
+  S.me.public_key   = pubB64;
+  S.me.wrapped_priv = wrapped;
+  S.me.priv_iv      = iv;
+  S.me.priv_salt    = Crypto.toB64(salt);
+  S.me.has_keys     = true;
+
+  setP(90, 'Finalising…');
+  await new Promise(r => setTimeout(r, 400));
+  setP(100, 'Done!');
+  await new Promise(r => setTimeout(r, 400));
+  screen.classList.add('hidden');
+}
+
+// ─── Load private key for returning users ────────────────────────────────────
+async function loadPrivateKey() {
+  const screen   = document.getElementById('setup-screen');
+  const progress = document.getElementById('setup-progress');
+  const status   = document.getElementById('setup-status');
+  screen.classList.remove('hidden');
+  progress.style.width = '30%'; status.textContent = 'Loading your encryption keys…';
+
+  const salt        = Crypto.fromB64(S.me.priv_salt);
+  const wrappingKey = await Crypto.deriveWrappingKey(S.password, salt);
+  progress.style.width = '65%'; status.textContent = 'Decrypting private key…';
+  S.privateKey = await Crypto.unwrapPrivateKey(S.me.wrapped_priv, S.me.priv_iv, wrappingKey);
+  S.publicKey  = await Crypto.importPublicKey(S.me.public_key);
+  progress.style.width = '100%'; status.textContent = 'Ready!';
+  await new Promise(r => setTimeout(r, 300));
+  screen.classList.add('hidden');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INIT APP
+// ═══════════════════════════════════════════════════════════════════════════════
+async function initApp() {
+  [S.channels, S.users] = await Promise.all([api.get('/channels'), api.get('/users')]);
+
+  // Render sidebar
+  const u = S.me;
+  document.getElementById('my-username').textContent = u.username;
+  document.getElementById('my-role').textContent     = u.is_admin ? 'Admin' : 'Member';
+  const av = document.getElementById('my-avatar');
+  av.textContent   = u.username[0].toUpperCase();
+  av.style.background = u.avatar_color;
+  if (u.is_admin) document.getElementById('admin-btn').style.display = '';
+
+  renderChannels();
+  renderDMs();
+  connectWS();
+
+  document.getElementById('app').style.display = 'flex';
+  document.getElementById('login-screen').classList.add('hidden');
+
+  // Auto-open first channel
+  if (S.channels.length) openChannel(S.channels[0].id);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CHANNEL / DM KEY MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+async function getChannelKey(cid) {
+  if (S.channelKeys[cid]) return S.channelKeys[cid];
+
+  // Try fetching from server
+  const res = await api.get(`/channels/${cid}/keys/me`);
+  if (res.wrapped_key) {
+    const key = await Crypto.unwrapSymKey(res.wrapped_key, S.privateKey);
+    S.channelKeys[cid] = key;
+    return key;
+  }
+
+  // We need to create the key and distribute it
+  const symKey = await Crypto.generateSymKey();
+  S.channelKeys[cid] = symKey;
+
+  // Distribute to all members who have public keys
+  await distributeChannelKey(cid, symKey);
+  return symKey;
+}
+
+async function distributeChannelKey(cid, symKey) {
+  const members = await api.get(`/channels/${cid}/members`);
+  const bundles = {};
+  for (const m of members) {
+    if (m.public_key) {
+      const pub = await Crypto.importPublicKey(m.public_key);
+      bundles[m.id] = await Crypto.wrapSymKey(symKey, pub);
+    }
+  }
+  if (Object.keys(bundles).length) {
+    await api.post(`/channels/${cid}/keys`, bundles);
+  }
+}
+
+async function getDMKey(otherId) {
+  if (S.dmKeys[otherId]) return S.dmKeys[otherId];
+
+  const res = await api.get(`/dm/${otherId}/keys/me`);
+  if (res.wrapped_key) {
+    const key = await Crypto.unwrapSymKey(res.wrapped_key, S.privateKey);
+    S.dmKeys[otherId] = key;
+    return key;
+  }
+
+  // Create and distribute key
+  const symKey = await Crypto.generateSymKey();
+  S.dmKeys[otherId] = symKey;
+
+  const theirKeys = await api.get(`/keys/${otherId}`);
+  if (!theirKeys.public_key) throw new Error('Recipient has not set up encryption yet');
+
+  const myPub   = await Crypto.importPublicKey(S.me.public_key);
+  const theirPub = await Crypto.importPublicKey(theirKeys.public_key);
+
+  await api.post('/dm/keys', {
+    recipient_id: otherId,
+    key_for_me:   await Crypto.wrapSymKey(symKey, myPub),
+    key_for_them: await Crypto.wrapSymKey(symKey, theirPub),
+  });
+  return symKey;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RENDER SIDEBAR
+// ═══════════════════════════════════════════════════════════════════════════════
+function renderChannels() {
+  const el = document.getElementById('channels-list');
+  el.innerHTML = S.channels.map(ch => {
+    const active = S.activeType === 'channel' && S.activeId === ch.id;
+    const unread = S.unread[ch.id];
+    return `<div class="nav-item ${active ? 'active' : ''}" onclick="openChannel('${ch.id}')">
+      <span class="hash">#</span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ch.name)}</span>
+      ${unread ? `<span class="unread">${unread}</span>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function renderDMs() {
+  const el = document.getElementById('dms-list');
+  const others = S.users.filter(u => u.id !== S.me.id);
+  el.innerHTML = others.map(u => {
+    const active = S.activeType === 'dm' && S.activeId === u.id;
+    const unread = S.unread[u.id];
+    return `<div class="nav-item ${active ? 'active' : ''}" onclick="openDM('${u.id}')">
+      <div class="avatar" style="background:${u.avatar_color}">${u.username[0].toUpperCase()}</div>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(u.username)}</span>
+      <span class="presence ${u.online ? 'online' : ''}"></span>
+      ${unread ? `<span class="unread">${unread}</span>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function updatePresence(userId, online) {
+  const u = S.users.find(x => x.id === userId);
+  if (u) { u.online = online; renderDMs(); }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OPEN CHANNEL / DM
+// ═══════════════════════════════════════════════════════════════════════════════
+async function openChannel(cid) {
+  S.activeType = 'channel'; S.activeId = cid;
+  delete S.unread[cid];
+  renderChannels();
+
+  const ch = S.channels.find(c => c.id === cid);
+  document.getElementById('no-channel').style.display   = 'none';
+  document.getElementById('chat-view').style.display    = 'flex';
+  document.getElementById('ch-icon').textContent = '#';
+  document.getElementById('ch-name').textContent = ch?.name || cid;
+  document.getElementById('ch-desc').textContent = ch?.description || '';
+  document.getElementById('msg-input').placeholder = `Message #${ch?.name || cid}`;
+  document.getElementById('messages-area').innerHTML = '<div class="empty-state"><div class="es-icon">⏳</div><div>Loading messages…</div></div>';
+
+  // Load members
+  loadMembers(cid);
+
+  // Get/create encryption key
+  let symKey;
+  try { symKey = await getChannelKey(cid); }
+  catch (e) { toast('Could not load encryption key: ' + e.message, 'error'); return; }
+
+  // Load messages
+  const msgs = await api.get(`/channels/${cid}/messages`);
+  await renderMessages(msgs, symKey, 'channel');
+}
+
+async function openDM(userId) {
+  S.activeType = 'dm'; S.activeId = userId;
+  delete S.unread[userId];
+  renderDMs();
+
+  const user = S.users.find(u => u.id === userId);
+  document.getElementById('no-channel').style.display   = 'none';
+  document.getElementById('chat-view').style.display    = 'flex';
+  document.getElementById('ch-icon').textContent = '👤';
+  document.getElementById('ch-name').textContent = user?.username || userId;
+  document.getElementById('ch-desc').textContent = user?.email || '';
+  document.getElementById('msg-input').placeholder = `Message ${user?.username || userId}`;
+  document.getElementById('messages-area').innerHTML = '<div class="empty-state"><div class="es-icon">⏳</div><div>Loading messages…</div></div>';
+  document.getElementById('members-list').innerHTML = '';
+
+  let symKey;
+  try {
+    symKey = await getDMKey(userId);
+  } catch (e) {
+    toast(e.message, 'error');
+    document.getElementById('messages-area').innerHTML = `<div class="empty-state"><div class="es-icon">🔒</div><div>${esc(e.message)}</div></div>`;
+    return;
+  }
+
+  const msgs = await api.get(`/dm/${userId}/messages`);
+  await renderMessages(msgs, symKey, 'dm');
+}
+
+async function loadMembers(cid) {
+  const members = await api.get(`/channels/${cid}/members`);
+  const online = members.filter(m => m.online);
+  const offline = members.filter(m => !m.online);
+  const el = document.getElementById('members-list');
+  el.innerHTML = '';
+
+  const render = (group, label) => {
+    if (!group.length) return;
+    el.insertAdjacentHTML('beforeend',
+      `<div style="padding:8px 8px 4px;font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">${label} — ${group.length}</div>`
+    );
+    for (const m of group) {
+      el.insertAdjacentHTML('beforeend', `
+        <div class="member-item">
+          <div class="avatar" style="background:${m.avatar_color}">${m.username[0].toUpperCase()}</div>
+          <div>
+            <div class="member-name">${esc(m.username)}</div>
+            ${m.is_admin ? '<div class="member-role">Admin</div>' : ''}
+          </div>
+          <span class="presence ${m.online ? 'online' : ''}" style="margin-left:auto"></span>
+        </div>`
+      );
+    }
+  };
+  render(online, 'Online');
+  render(offline, 'Offline');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RENDER MESSAGES
+// ═══════════════════════════════════════════════════════════════════════════════
+async function renderMessages(msgs, symKey, type) {
+  const area = document.getElementById('messages-area');
+  if (!msgs.length) {
+    area.innerHTML = '<div class="empty-state"><div class="es-icon">💬</div><div>No messages yet. Say hello!</div></div>';
+    return;
+  }
+  area.innerHTML = '';
+
+  let lastDate = null;
+  for (const msg of msgs) {
+    const d = new Date(msg.timestamp + 'Z');
+    const dateStr = d.toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric'});
+    if (dateStr !== lastDate) {
+      area.insertAdjacentHTML('beforeend', `<div class="msg-separator">${dateStr}</div>`);
+      lastDate = dateStr;
+    }
+    await appendMessage(msg, type, true);
+  }
+  area.scrollTop = area.scrollHeight;
+}
+
+async function appendMessage(msg, type, skipScroll) {
+  const area = document.getElementById('messages-area');
+  const isMe = msg.sender_id === S.me.id;
+
+  // Get sym key for decryption
+  let symKey;
+  if (type === 'channel') symKey = S.channelKeys[S.activeId] || await getChannelKey(S.activeId).catch(() => null);
+  else symKey = S.dmKeys[S.activeId] || await getDMKey(S.activeId).catch(() => null);
+
+  let text = '';
+  if (symKey) {
+    try { text = await Crypto.decrypt(symKey, msg.encrypted_content, msg.iv); }
+    catch { text = null; }
+  }
+
+  const d    = new Date(msg.timestamp + 'Z');
+  const time = d.toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit'});
+  const initials = (msg.sender_name || '?')[0].toUpperCase();
+  const color    = msg.avatar_color || '#7c3aed';
+
+  // Remove empty state if present
+  const es = area.querySelector('.empty-state');
+  if (es) es.remove();
+
+  let content = '';
+  if (text === null) {
+    content = `<div class="msg-encrypted">🔒 [Encrypted — key unavailable]</div>`;
+  } else if (msg.file_id) {
+    content = `<a class="msg-file" href="/api/files/${msg.file_id}" target="_blank" download>
+      📎 <span>${esc(msg.file_name || 'attachment')}</span>
+      <span style="color:var(--text-muted);font-size:.75rem;margin-left:auto">Download</span>
+    </a>`;
+    if (text) content = `<div class="msg-text">${esc(text)}</div>` + content;
+  } else {
+    content = `<div class="msg-text">${esc(text)}</div>`;
+  }
+
+  area.insertAdjacentHTML('beforeend', `
+    <div class="msg-group" id="msg-${msg.id}">
+      <div class="avatar" style="background:${color};width:36px;height:36px;font-size:.85rem">${initials}</div>
+      <div class="msg-body">
+        <div class="msg-meta">
+          <span class="msg-sender">${esc(msg.sender_name || 'Unknown')}</span>
+          <span class="msg-time">${time}</span>
+          <span class="e2e-badge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1a5 5 0 0 0-5 5v3H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V11a2 2 0 0 0-2-2h-2V6a5 5 0 0 0-5-5zm0 2a3 3 0 0 1 3 3v3H9V6a3 3 0 0 1 3-3zm0 10a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/></svg>E2E</span>
+        </div>
+        ${content}
+      </div>
+    </div>
+  `);
+
+  if (!skipScroll) area.scrollTop = area.scrollHeight;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SEND MESSAGE
+// ═══════════════════════════════════════════════════════════════════════════════
+let pendingFile = null;
+
+function handleFileSelect(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  pendingFile = file;
+  document.getElementById('file-preview-name').textContent = file.name;
+  document.getElementById('file-preview').classList.remove('hidden');
+}
+
+function clearFile() {
+  pendingFile = null;
+  document.getElementById('file-input').value = '';
+  document.getElementById('file-preview').classList.add('hidden');
+}
+
+async function sendMessage() {
+  const input = document.getElementById('msg-input');
+  const text  = input.value.trim();
+  if (!text && !pendingFile) return;
+  if (!S.activeId) return;
+
+  const btn = document.getElementById('send-btn');
+  btn.disabled = true;
+
+  try {
+    let fileId = null, fileName = null;
+
+    if (pendingFile) {
+      const res = await api.upload(pendingFile);
+      fileId   = res.file_id;
+      fileName = res.filename;
+      clearFile();
+    }
+
+    if (S.activeType === 'channel') {
+      const key = await getChannelKey(S.activeId);
+      const { encrypted, iv } = await Crypto.encrypt(key, text || ' ');
+      await api.post(`/channels/${S.activeId}/messages`, { encrypted_content: encrypted, iv, file_id: fileId, file_name: fileName });
+    } else {
+      // DM: both parties share the same AES-GCM key — encrypt once, store for both
+      const key = await getDMKey(S.activeId);
+      const { encrypted, iv } = await Crypto.encrypt(key, text || ' ');
+      await api.post(`/dm/${S.activeId}/messages`, {
+        enc_for_sender:    encrypted, iv_sender:    iv,
+        enc_for_recipient: encrypted, iv_recipient: iv,
+        file_id: fileId, file_name: fileName,
+      });
+    }
+
+    input.value = '';
+    input.style.height = 'auto';
+  } catch (e) {
+    toast('Failed to send: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function msgKeydown(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 140) + 'px';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TYPING INDICATOR
+// ═══════════════════════════════════════════════════════════════════════════════
+let typingTimeout;
+function sendTyping() {
+  if (S.activeType !== 'channel' || !ws || ws.readyState !== 1) return;
+  clearTimeout(typingTimeout);
+  ws.send(JSON.stringify({ type: 'typing', channel_id: S.activeId }));
+  typingTimeout = setTimeout(() => {}, 2000);
+}
+
+const typingUsers = {};
+function showTyping(msg) {
+  if (msg.channel_id !== S.activeId) return;
+  typingUsers[msg.user_id] = msg.username;
+  clearTimeout(S.typingTimers[msg.user_id]);
+  S.typingTimers[msg.user_id] = setTimeout(() => {
+    delete typingUsers[msg.user_id];
+    renderTyping();
+  }, 3000);
+  renderTyping();
+}
+
+function renderTyping() {
+  const names = Object.values(typingUsers);
+  const el = document.getElementById('typing-indicator');
+  if (!names.length) { el.textContent = ''; return; }
+  el.textContent = names.length === 1
+    ? `${names[0]} is typing…`
+    : `${names.slice(0,-1).join(', ')} and ${names.at(-1)} are typing…`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CHANNELS
+// ═══════════════════════════════════════════════════════════════════════════════
+function showNewChannel() { openModal('new-channel-modal'); }
+
+async function createChannel() {
+  const name = document.getElementById('nc-name').value.trim();
+  if (!name) return;
+  try {
+    const ch = await api.post('/channels', { name, description: document.getElementById('nc-desc').value.trim() });
+    if (!S.channels.find(c => c.id === ch.id)) S.channels.push(ch);
+    renderChannels();
+    closeModal('new-channel-modal');
+    openChannel(ch.id);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ADMIN
+// ═══════════════════════════════════════════════════════════════════════════════
+async function showAdmin() {
+  openModal('admin-modal');
+  await loadAdminUsers();
+}
+
+async function loadAdminUsers() {
+  const users = await api.get('/users');
+  const el  = document.getElementById('admin-users-list');
+  document.getElementById('user-count').textContent = `(${users.length})`;
+  el.innerHTML = users.map(u => `
+    <div class="user-row">
+      <div class="avatar" style="background:${u.avatar_color};width:34px;height:34px">${u.username[0].toUpperCase()}</div>
+      <div class="user-detail">
+        <div class="uname">${esc(u.username)} ${u.is_admin ? '<span class="badge badge-admin">admin</span>' : ''} ${u.has_keys ? '<span class="badge badge-e2e">🔐 E2E</span>' : ''}</div>
+        <div class="uemail">${esc(u.email)}</div>
+      </div>
+      ${u.id !== S.me.id ? `<button class="btn btn-sm btn-danger" onclick="adminDeleteUser('${u.id}')">Delete</button>` : '<span class="text-sm text-dim">You</span>'}
+    </div>`
+  ).join('');
+}
+
+async function adminCreateUser() {
+  const username = document.getElementById('nu-username').value.trim();
+  const email    = document.getElementById('nu-email').value.trim();
+  const password = document.getElementById('nu-password').value;
+  const isAdmin  = document.getElementById('nu-admin').checked;
+  const err      = document.getElementById('admin-error');
+
+  if (!username || !email || !password) { showErr(err, 'All fields required'); return; }
+  try {
+    await api.post('/users', { username, email, password, is_admin: isAdmin });
+    ['nu-username','nu-email','nu-password'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('nu-admin').checked = false;
+    err.classList.remove('show');
+    toast(`User "${username}" created`, 'success');
+    await loadAdminUsers();
+    S.users = await api.get('/users');
+    renderDMs();
+  } catch (e) { showErr(err, e.message); }
+}
+
+async function adminDeleteUser(uid) {
+  if (!confirm('Delete this user?')) return;
+  try {
+    await api.delete(`/users/${uid}`);
+    toast('User deleted', 'success');
+    S.users = await api.get('/users');
+    renderDMs();
+    await loadAdminUsers();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SETTINGS
+// ═══════════════════════════════════════════════════════════════════════════════
+function showSettings() { openModal('settings-modal'); }
+
+async function changePassword() {
+  const old  = document.getElementById('old-pw').value;
+  const n1   = document.getElementById('new-pw').value;
+  const n2   = document.getElementById('new-pw2').value;
+  const err  = document.getElementById('settings-error');
+  if (!old || !n1 || !n2) { showErr(err, 'All fields required'); return; }
+  if (n1 !== n2) { showErr(err, 'New passwords do not match'); return; }
+  try {
+    await api.post('/me/password', { old_password: old, new_password: n1 });
+    S.password = n1;
+    err.classList.remove('show');
+    toast('Password updated', 'success');
+    closeModal('settings-modal');
+  } catch (e) { showErr(err, e.message); }
+}
+
+function logout() {
+  S.token = null; S.me = null; S.password = null; S.privateKey = null;
+  if (ws) ws.close();
+  location.reload();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+function toggleMembers() {
+  const p = document.getElementById('members-panel');
+  p.style.display = p.style.display === 'none' ? '' : 'none';
+}
+
+function openModal(id)  { document.getElementById(id).classList.remove('hidden'); }
+function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
+
+function showErr(el, msg) { el.textContent = msg; el.classList.add('show'); }
+
+function esc(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+let toastTimer;
+function toast(msg, type = 'info') {
+  const el = document.getElementById('toasts');
+  const d  = document.createElement('div');
+  d.className = `toast toast-${type}`;
+  d.textContent = msg;
+  el.appendChild(d);
+  setTimeout(() => d.remove(), 4000);
+}
+
+// Close modals on backdrop click
+document.querySelectorAll('.modal-backdrop').forEach(b => {
+  b.addEventListener('click', e => { if (e.target === b) b.classList.add('hidden'); });
+});
+</script>
+</body>
+</html>

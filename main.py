@@ -333,15 +333,22 @@ async def upload_keys(data: KeysUpload, me=Depends(current_user)):
 
 @app.get("/api/keys/{user_id}")
 async def get_keys(user_id: str, _=Depends(current_user)):
+    """
+    Returns ONLY the public key for the given user. The wrapped private key,
+    its IV, and salt are sensitive — they enable offline brute-force of the
+    user's password — and must never be returned for anyone other than the
+    owner. The owner receives their own wrapped material as part of the
+    /api/token login response and via /api/me.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            "SELECT public_key,wrapped_priv,priv_iv,priv_salt FROM users WHERE id=?", (user_id,)
+            "SELECT public_key FROM users WHERE id=?", (user_id,)
         )
         row = await cur.fetchone()
     if not row:
         raise HTTPException(404, "User not found")
-    return dict(row)
+    return {"public_key": row["public_key"]}
 
 
 # ─── User management ────────────────────────────────────────────────────────────

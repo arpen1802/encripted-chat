@@ -315,7 +315,7 @@
     <div id="chat-view" style="display:none;flex-direction:column;height:100%">
       <div class="encryption-notice">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 1a5 5 0 0 0-5 5v3H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V11a2 2 0 0 0-2-2h-2V6a5 5 0 0 0-5-5zm0 2a3 3 0 0 1 3 3v3H9V6a3 3 0 0 1 3-3zm0 10a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/></svg>
-        End-to-end encrypted · Messages are encrypted in your browser before sending
+        End-to-end encrypted · Messages and files are encrypted in your browser before sending
       </div>
       <div id="channel-header">
         <span id="ch-icon" style="font-size:1.2rem">#</span>
@@ -500,6 +500,25 @@ const Crypto = {
       symKey, this.fromB64(encB64)
     );
     return new TextDecoder().decode(pt);
+  },
+
+  // Encrypt arbitrary bytes; output blob = [12-byte IV || ciphertext]
+  async encryptBytes(symKey, bytes) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, symKey, bytes);
+    const out = new Uint8Array(12 + ct.byteLength);
+    out.set(iv, 0);
+    out.set(new Uint8Array(ct), 12);
+    return out;
+  },
+
+  // Decrypt the [IV || ciphertext] blob produced by encryptBytes
+  async decryptBytes(symKey, ivAndCt) {
+    const buf = ivAndCt instanceof Uint8Array ? ivAndCt : new Uint8Array(ivAndCt);
+    const iv = buf.subarray(0, 12);
+    const ct = buf.subarray(12);
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, symKey, ct);
+    return new Uint8Array(pt);
   },
 };
 
@@ -965,10 +984,26 @@ async function appendMessage(msg, type, skipScroll) {
   if (type === 'channel') symKey = S.channelKeys[S.activeId] || await getChannelKey(S.activeId).catch(() => null);
   else symKey = S.dmKeys[S.activeId] || await getDMKey(S.activeId).catch(() => null);
 
+  // Decrypt body. New format is a JSON envelope { text, file?: {name,type,size} }.
+  // Legacy messages have plaintext text and rely on msg.file_name being set
+  // server-side — we keep handling those for backwards compatibility.
   let text = '';
+  let fileMeta = null;
   if (symKey) {
-    try { text = await Crypto.decrypt(symKey, msg.encrypted_content, msg.iv); }
-    catch { text = null; }
+    try {
+      const decrypted = await Crypto.decrypt(symKey, msg.encrypted_content, msg.iv);
+      try {
+        const env = JSON.parse(decrypted);
+        if (env && typeof env === 'object' && ('text' in env || 'file' in env)) {
+          text     = env.text || '';
+          fileMeta = env.file || null;
+        } else {
+          text = decrypted;
+        }
+      } catch {
+        text = decrypted;                       // legacy plaintext body
+      }
+    } catch { text = null; }
   }
 
   const d    = new Date(msg.timestamp + 'Z');
@@ -983,14 +1018,32 @@ async function appendMessage(msg, type, skipScroll) {
   let content = '';
   if (text === null) {
     content = `<div class="msg-encrypted">🔒 [Encrypted — key unavailable]</div>`;
-  } else if (msg.file_id) {
-    content = `<a class="msg-file" href="/api/files/${msg.file_id}" target="_blank" download>
-      📎 <span>${esc(msg.file_name || 'attachment')}</span>
-      <span style="color:var(--text-muted);font-size:.75rem;margin-left:auto">Download</span>
-    </a>`;
-    if (text) content = `<div class="msg-text">${esc(text)}</div>` + content;
   } else {
-    content = `<div class="msg-text">${esc(text)}</div>`;
+    const parts = [];
+    if (text) parts.push(`<div class="msg-text">${esc(text)}</div>`);
+
+    if (msg.file_id && fileMeta) {
+      // New format: encrypted file. Decrypt-on-click via downloadEncryptedFile.
+      const safeName = esc(fileMeta.name || 'attachment');
+      const safeType = esc(fileMeta.type || 'application/octet-stream');
+      const sizeStr  = formatBytes(fileMeta.size || 0);
+      parts.push(`<button type="button" class="msg-file"
+          data-fid="${esc(msg.file_id)}"
+          data-name="${safeName}"
+          data-type="${safeType}"
+          onclick="downloadEncryptedFile(this)">
+        📎 <span>${safeName}</span>
+        <span style="color:var(--text-muted);font-size:.75rem;margin-left:auto">${sizeStr} · Download</span>
+      </button>`);
+    } else if (msg.file_id) {
+      // Legacy plaintext file: server still has the original filename.
+      parts.push(`<a class="msg-file" href="/api/files/${esc(msg.file_id)}" target="_blank" download>
+        📎 <span>${esc(msg.file_name || 'attachment')}</span>
+        <span style="color:var(--text-muted);font-size:.75rem;margin-left:auto">Download</span>
+      </a>`);
+    }
+
+    content = parts.join('') || `<div class="msg-text"></div>`;
   }
 
   area.insertAdjacentHTML('beforeend', `
@@ -1039,27 +1092,43 @@ async function sendMessage() {
   btn.disabled = true;
 
   try {
-    let fileId = null, fileName = null;
+    // Conversation key is needed for both file and body encryption.
+    const key = S.activeType === 'channel'
+      ? await getChannelKey(S.activeId)
+      : await getDMKey(S.activeId);
+
+    let fileId = null, fileMeta = null;
 
     if (pendingFile) {
-      const res = await api.upload(pendingFile);
+      // Encrypt the file under the same conversation key. The IV is prepended
+      // to the ciphertext, producing a self-contained opaque blob.
+      const buf = await pendingFile.arrayBuffer();
+      const enc = await Crypto.encryptBytes(key, new Uint8Array(buf));
+      const blob = new Blob([enc], { type: 'application/octet-stream' });
+      const res = await api.upload(blob);
       fileId   = res.file_id;
-      fileName = res.filename;
+      fileMeta = {
+        name: pendingFile.name,
+        type: pendingFile.type || 'application/octet-stream',
+        size: pendingFile.size,
+      };
       clearFile();
     }
 
+    // Body is now a JSON envelope so the original filename and MIME type are
+    // encrypted alongside the message text — they never hit the server in
+    // plaintext.
+    const body = JSON.stringify({ text: text || '', file: fileMeta });
+    const { encrypted, iv } = await Crypto.encrypt(key, body);
+
     if (S.activeType === 'channel') {
-      const key = await getChannelKey(S.activeId);
-      const { encrypted, iv } = await Crypto.encrypt(key, text || ' ');
-      await api.post(`/channels/${S.activeId}/messages`, { encrypted_content: encrypted, iv, file_id: fileId, file_name: fileName });
+      await api.post(`/channels/${S.activeId}/messages`, { encrypted_content: encrypted, iv, file_id: fileId });
     } else {
       // DM: both parties share the same AES-GCM key — encrypt once, store for both
-      const key = await getDMKey(S.activeId);
-      const { encrypted, iv } = await Crypto.encrypt(key, text || ' ');
       await api.post(`/dm/${S.activeId}/messages`, {
         enc_for_sender:    encrypted, iv_sender:    iv,
         enc_for_recipient: encrypted, iv_recipient: iv,
-        file_id: fileId, file_name: fileName,
+        file_id: fileId,
       });
     }
 
@@ -1228,6 +1297,46 @@ function showErr(el, msg) { el.textContent = msg; el.classList.add('show'); }
 function esc(s) {
   if (!s) return '';
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function formatBytes(n) {
+  if (!n || n < 1024) return (n || 0) + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
+// Fetch an encrypted file blob, decrypt it with the active conversation key,
+// and trigger a browser download with the original filename.
+async function downloadEncryptedFile(btnEl) {
+  const fid  = btnEl.dataset.fid;
+  const name = btnEl.dataset.name || 'file';
+  const type = btnEl.dataset.type || 'application/octet-stream';
+  const orig = btnEl.innerHTML;
+  btnEl.disabled = true;
+  btnEl.innerHTML = '⏳ Decrypting…';
+  try {
+    const symKey = S.activeType === 'channel'
+      ? await getChannelKey(S.activeId)
+      : await getDMKey(S.activeId);
+    const res = await fetch(`/api/files/${encodeURIComponent(fid)}`, {
+      headers: { 'Authorization': `Bearer ${S.token}` },
+    });
+    if (!res.ok) throw new Error(`Download failed (${res.status})`);
+    const enc = new Uint8Array(await res.arrayBuffer());
+    const pt  = await Crypto.decryptBytes(symKey, enc);
+    const blob = new Blob([pt], { type });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  } catch (e) {
+    toast('Decrypt failed: ' + e.message, 'error');
+  } finally {
+    btnEl.disabled = false;
+    btnEl.innerHTML = orig;
+  }
 }
 
 let toastTimer;

@@ -30,6 +30,7 @@ TOKEN_EXP_HOURS = 8
 DB_PATH    = os.getenv("DB_PATH", "chat.db")
 UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "uploads"))
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))  # 50 MB default
 
 AVATAR_COLORS = [
     "#7c3aed","#2563eb","#059669","#d97706",
@@ -625,30 +626,48 @@ async def get_dm_key(other_id: str, me=Depends(current_user)):
 
 
 # ─── File upload / download ──────────────────────────────────────────────────────
+# Files are end-to-end encrypted: the client encrypts with the conversation
+# (channel/DM) key, prepends the IV (12 bytes) to the ciphertext, and uploads
+# the resulting opaque blob. Original filename and MIME type are encrypted
+# into the message body, NOT stored on the server. The server sees only
+# opaque bytes and a UUID.
 @app.post("/api/files")
 async def upload_file(file: UploadFile = File(...), me=Depends(current_user)):
     fid     = str(uuid.uuid4())
-    suffix  = Path(file.filename).suffix
-    stored  = f"{fid}{suffix}"
+    stored  = fid                              # no extension; the blob is ciphertext
     content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"File too large (max {MAX_UPLOAD_BYTES} bytes)")
     (UPLOADS_DIR / stored).write_bytes(content)
     async with aiosqlite.connect(DB_PATH) as db:
+        # original_name/mime_type intentionally left empty — they would leak
+        # metadata. The real values live inside the encrypted message body.
         await db.execute(
             "INSERT INTO files (id,stored_name,original_name,mime_type,size,uploaded_by) VALUES (?,?,?,?,?,?)",
-            (fid, stored, file.filename, file.content_type, len(content), me["id"])
+            (fid, stored, "", "application/octet-stream", len(content), me["id"])
         )
         await db.commit()
-    return {"file_id": fid, "filename": file.filename, "size": len(content)}
+    return {"file_id": fid, "size": len(content)}
 
 
 @app.get("/api/files/{fid}")
 async def get_file(fid: str, _=Depends(current_user)):
+    """
+    Returns the stored blob as opaque bytes. New uploads are ciphertext that
+    the client decrypts; legacy uploads (pre-encryption) still have an
+    original_name in the DB and are served with their original filename so
+    they remain usable.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT stored_name,original_name,mime_type FROM files WHERE id=?", (fid,))
+        cur = await db.execute("SELECT stored_name,original_name FROM files WHERE id=?", (fid,))
         row = await cur.fetchone()
     if not row:
         raise HTTPException(404, "File not found")
-    return FileResponse(UPLOADS_DIR / row[0], filename=row[1], media_type=row[2])
+    stored, orig = row
+    kwargs = {"media_type": "application/octet-stream"}
+    if orig:                                   # legacy plaintext file
+        kwargs["filename"] = orig
+    return FileResponse(UPLOADS_DIR / stored, **kwargs)
 
 
 # ─── WebSocket ───────────────────────────────────────────────────────────────────

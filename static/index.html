@@ -1266,10 +1266,34 @@ async function changePassword() {
   const err  = document.getElementById('settings-error');
   if (!old || !n1 || !n2) { showErr(err, 'All fields required'); return; }
   if (n1 !== n2) { showErr(err, 'New passwords do not match'); return; }
+  if (!S.privateKey) { showErr(err, 'Encryption key not loaded — please reload and try again'); return; }
   try {
-    await api.post('/me/password', { old_password: old, new_password: n1 });
-    S.password = n1;
+    // CRITICAL: re-wrap the private key with a KEK derived from the new
+    // password. Without this the server still has the private key wrapped
+    // under the OLD password and the user is locked out on next login.
+    const salt        = crypto.getRandomValues(new Uint8Array(16));
+    const wrappingKey = await Crypto.deriveWrappingKey(n1, salt);
+    const { wrapped, iv } = await Crypto.wrapPrivateKey(S.privateKey, wrappingKey);
+    const saltB64 = Crypto.toB64(salt);
+
+    await api.post('/me/password', {
+      old_password: old,
+      new_password: n1,
+      wrapped_priv: wrapped,
+      priv_iv:      iv,
+      priv_salt:    saltB64,
+    });
+
+    // Keep local state in sync so the next save / re-login works.
+    S.password        = n1;
+    S.me.wrapped_priv = wrapped;
+    S.me.priv_iv      = iv;
+    S.me.priv_salt    = saltB64;
+
     err.classList.remove('show');
+    document.getElementById('old-pw').value = '';
+    document.getElementById('new-pw').value = '';
+    document.getElementById('new-pw2').value = '';
     toast('Password updated', 'success');
     closeModal('settings-modal');
   } catch (e) { showErr(err, e.message); }

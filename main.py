@@ -246,6 +246,12 @@ class UserCreate(BaseModel):
 class PasswordChange(BaseModel):
     old_password: str
     new_password: str
+    # The client must re-wrap its private key with a KEK derived from the
+    # NEW password, otherwise the user is locked out of all encrypted
+    # history on next login. These three fields are required.
+    wrapped_priv: str
+    priv_iv:      str
+    priv_salt:    str
 
 class KeysUpload(BaseModel):
     public_key:  str
@@ -311,11 +317,26 @@ async def get_me(me=Depends(current_user)):
 
 @app.post("/api/me/password")
 async def change_password(data: PasswordChange, me=Depends(current_user)):
+    """
+    Atomically rotates the login password AND the password-derived KEK that
+    protects the user's RSA private key.
+
+    The KEK is derived in the browser via PBKDF2(new_password, new_salt) and
+    used to re-wrap the in-memory RSA private key. The client sends the new
+    bcrypt-input plaintext + the freshly-wrapped private-key material in
+    one request; the server updates all four fields in a single statement.
+    Updating only password_hash (the old behaviour) caused permanent data
+    loss because the wrapped_priv on the server was still encrypted under
+    the previous password's KEK.
+    """
     if not bcrypt.checkpw(data.old_password.encode(), me["password_hash"].encode()):
         raise HTTPException(400, "Current password is incorrect")
     new_hash = bcrypt.hashpw(data.new_password.encode(), bcrypt.gensalt()).decode()
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET password_hash=? WHERE id=?", (new_hash, me["id"]))
+        await db.execute(
+            "UPDATE users SET password_hash=?, wrapped_priv=?, priv_iv=?, priv_salt=? WHERE id=?",
+            (new_hash, data.wrapped_priv, data.priv_iv, data.priv_salt, me["id"])
+        )
         await db.commit()
     return {"status": "ok"}
 

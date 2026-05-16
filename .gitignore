@@ -13,19 +13,23 @@ build/
 venv/
 env/
 
-# Database — contains real messages, never commit
-chat.db
-chat.db-journal
-chat.db-shm
-chat.db-wal
+# Databases — contain real messages, never commit.
+# Glob covers chat.db, test_chat.db, and any future *.db scratch files.
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
 
-# Uploaded files — user data, never commit
+# Uploaded files — user data (encrypted blobs but still per-deployment).
 uploads/
 
 # Secrets
 .env
 .env.*
 secret_key.txt
+
+# Logs
+*.log
 
 # OS
 .DS_Store
@@ -38,3 +42,8 @@ desktop.ini
 *.swp
 *.swo
 *~
+
+# Scratch / test artifacts
+test.txt
+*.bak
+*.tmp

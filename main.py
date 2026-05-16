@@ -84,6 +84,17 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+async def broadcast_to_channel(cid: str, msg: dict, exclude: Optional[set] = None):
+    """Send `msg` to every currently-online member of channel `cid`."""
+    exclude = exclude or set()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT user_id FROM channel_members WHERE channel_id=?", (cid,)
+        )
+        members = [r[0] for r in await cur.fetchall()]
+    await manager.broadcast([m for m in members if m not in exclude], msg)
+
+
 # ─── Database ──────────────────────────────────────────────────────────────────
 async def get_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -344,12 +355,31 @@ async def change_password(data: PasswordChange, me=Depends(current_user)):
 # ─── Key management ─────────────────────────────────────────────────────────────
 @app.post("/api/keys")
 async def upload_keys(data: KeysUpload, me=Depends(current_user)):
+    """
+    First-time E2E setup: the user uploads their public key (and the
+    password-wrapped private key for portability). Until this point existing
+    channel members couldn't wrap the channel key for this user — they had
+    no public key to wrap to. Now they can, so we emit `rewrap_needed` to
+    every channel the new user belongs to. Online key-holders will respond
+    by calling /members-needing-keys and posting wrapped keys.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE users SET public_key=?,wrapped_priv=?,priv_iv=?,priv_salt=? WHERE id=?",
             (data.public_key, data.wrapped_priv, data.priv_iv, data.priv_salt, me["id"])
         )
+        cur = await db.execute(
+            "SELECT channel_id FROM channel_members WHERE user_id=?", (me["id"],)
+        )
+        my_channels = [r[0] for r in await cur.fetchall()]
         await db.commit()
+
+    for cid in my_channels:
+        await broadcast_to_channel(
+            cid,
+            {"type": "rewrap_needed", "channel_id": cid},
+            exclude={me["id"]},
+        )
     return {"status": "ok"}
 
 
@@ -394,6 +424,7 @@ async def create_user(data: UserCreate, _=Depends(admin_user)):
     uid      = str(uuid.uuid4())
     pw_hash  = bcrypt.hashpw(data.password.encode(), bcrypt.gensalt()).decode()
     color    = random.choice(AVATAR_COLORS)
+    joined_channels: List[str] = []
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
@@ -407,6 +438,7 @@ async def create_user(data: UserCreate, _=Depends(admin_user)):
                     "INSERT OR IGNORE INTO channel_members (channel_id,user_id) VALUES (?,?)",
                     (ch[0], uid)
                 )
+                joined_channels.append(ch[0])
             await db.commit()
     except aiosqlite.IntegrityError:
         raise HTTPException(400, "Username or email already taken")
@@ -416,6 +448,19 @@ async def create_user(data: UserCreate, _=Depends(admin_user)):
         "type": "user_created",
         "user": {"id": uid, "username": data.username, "avatar_color": color, "is_admin": data.is_admin}
     })
+
+    # Membership changed for every existing channel — ping online members so
+    # they can wrap channel keys for the new account. The user has no public
+    # key yet, so /members-needing-keys will filter them out on this pass.
+    # A second wave fires from /api/keys after they log in for the first
+    # time and upload their public key.
+    for cid in joined_channels:
+        await broadcast_to_channel(
+            cid,
+            {"type": "rewrap_needed", "channel_id": cid},
+            exclude={uid},
+        )
+
     return {"id": uid, "username": data.username, "email": data.email, "is_admin": data.is_admin, "avatar_color": color}
 
 
@@ -484,27 +529,97 @@ async def channel_members(cid: str, me=Depends(current_user)):
 
 # ─── Channel encryption keys ─────────────────────────────────────────────────────
 @app.post("/api/channels/{cid}/keys")
-async def store_channel_keys(cid: str, payload: dict, _=Depends(current_user)):
-    """payload = {user_id: wrapped_key_base64, ...}"""
+async def store_channel_keys(cid: str, payload: dict, me=Depends(current_user)):
+    """
+    Persist {user_id: wrapped_key_base64, ...}. Used both for initial channel
+    setup (creator wraps for every member) and for re-wraps when a new user
+    joins. After storing, each recipient is notified over their WebSocket so
+    they can immediately re-open the channel and decrypt.
+
+    Race-prevention: only the channel creator may post the FIRST set of
+    keys. Once any key exists, anyone with the key can add re-wraps. Without
+    this, two clients opening a brand-new channel concurrently could each
+    generate a different key and clobber each other via INSERT OR REPLACE.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT created_by FROM channels WHERE id=?", (cid,)
+        )
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "Channel not found")
+        created_by = row[0]
+        cur = await db.execute(
+            "SELECT 1 FROM channel_keys WHERE channel_id=? LIMIT 1", (cid,)
+        )
+        has_existing = (await cur.fetchone()) is not None
+        if not has_existing and me["id"] != created_by:
+            raise HTTPException(
+                409,
+                "Only the channel creator can establish the initial key. "
+                "Refresh to fetch the creator's key."
+            )
+
         for uid, wk in payload.items():
             await db.execute(
                 "INSERT OR REPLACE INTO channel_keys (channel_id,user_id,wrapped_key) VALUES (?,?,?)",
                 (cid, uid, wk)
             )
         await db.commit()
+    for uid in payload:
+        await manager.send(uid, {"type": "channel_key_available", "channel_id": cid})
     return {"stored": len(payload)}
 
 
 @app.get("/api/channels/{cid}/keys/me")
 async def my_channel_key(cid: str, me=Depends(current_user)):
+    """
+    Returns the caller's wrapped channel key plus a hint about whether any
+    OTHER member already has a wrapped key. The client uses this to
+    distinguish "channel is brand-new, I should generate the key" from
+    "key already exists, I just need to wait for someone to wrap it for me".
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             "SELECT wrapped_key FROM channel_keys WHERE channel_id=? AND user_id=?",
             (cid, me["id"])
         )
         row = await cur.fetchone()
-    return {"wrapped_key": row[0] if row else None}
+        my_key = row[0] if row else None
+
+        cur = await db.execute(
+            "SELECT 1 FROM channel_keys WHERE channel_id=? AND user_id != ? LIMIT 1",
+            (cid, me["id"])
+        )
+        has_others = (await cur.fetchone()) is not None
+    return {"wrapped_key": my_key, "has_other_keys": has_others}
+
+
+@app.get("/api/channels/{cid}/members-needing-keys")
+async def members_needing_keys(cid: str, me=Depends(current_user)):
+    """
+    Returns members of the channel who don't yet have a wrapped channel key
+    AND have a public key on file (i.e. they've completed E2E setup). Used
+    by clients that hold the channel key to re-wrap and distribute when
+    membership changes.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT 1 FROM channel_members WHERE channel_id=? AND user_id=?",
+            (cid, me["id"])
+        )
+        if not await cur.fetchone():
+            raise HTTPException(403, "Not a member")
+        cur = await db.execute("""
+            SELECT u.id AS user_id, u.public_key
+            FROM users u
+            JOIN channel_members cm ON cm.user_id = u.id AND cm.channel_id = ?
+            LEFT JOIN channel_keys ck ON ck.user_id = u.id AND ck.channel_id = ?
+            WHERE ck.user_id IS NULL AND u.public_key IS NOT NULL
+        """, (cid, cid))
+        rows = await cur.fetchall()
+    return [{"user_id": r["user_id"], "public_key": r["public_key"]} for r in rows]
 
 
 # ─── Messages ───────────────────────────────────────────────────────────────────

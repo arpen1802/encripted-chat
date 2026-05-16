@@ -586,6 +586,13 @@ function connectWS() {
   ws.onmessage = e => handleWS(JSON.parse(e.data));
   ws.onclose   = () => { wsReconnect = setTimeout(connectWS, 3000); };
   ws.onerror   = () => ws.close();
+  ws.onopen    = () => {
+    // Catch up on any rewrap_needed events missed while offline. For every
+    // channel whose key I hold in memory, push out wraps for new members.
+    for (const cid of Object.keys(S.channelKeys || {})) {
+      rewrapChannelKey(cid);
+    }
+  };
 
   // Keepalive ping every 25s
   setInterval(() => { if (ws.readyState === 1) ws.send(JSON.stringify({type:'ping'})); }, 25000);
@@ -630,6 +637,18 @@ function handleWS(msg) {
     case 'channel_created':
       S.channels.push(msg.channel);
       renderChannels();
+      break;
+    case 'rewrap_needed':
+      // Someone joined a channel I'm in (or just finished E2E setup). If I
+      // hold the key, wrap and upload it for them.
+      rewrapChannelKey(msg.channel_id);
+      break;
+    case 'channel_key_available':
+      // Someone just wrapped a channel key for me. If I'm currently viewing
+      // that channel and waiting for it, re-open to fetch & decrypt.
+      if (S.activeType === 'channel' && S.activeId === msg.channel_id && !S.channelKeys[msg.channel_id]) {
+        openChannel(msg.channel_id);
+      }
       break;
   }
 }
@@ -769,7 +788,6 @@ async function initApp() {
 async function getChannelKey(cid) {
   if (S.channelKeys[cid]) return S.channelKeys[cid];
 
-  // Try fetching from server
   const res = await api.get(`/channels/${cid}/keys/me`);
   if (res.wrapped_key) {
     const key = await Crypto.unwrapSymKey(res.wrapped_key, S.privateKey);
@@ -777,12 +795,32 @@ async function getChannelKey(cid) {
     return key;
   }
 
-  // We need to create the key and distribute it
+  // No wrapped key for me. Two cases:
+  //  (a) other members already have keys → an existing key holder must wrap
+  //      it for me. Don't generate a new one or we'll fork the channel.
+  //  (b) nobody has a key yet → I'm the first; safe to generate & distribute.
+  if (res.has_other_keys) {
+    const err = new Error("Channel key hasn't been shared with you yet. Ask an existing member to come online.");
+    err.code = 'AWAITING_KEY';
+    throw err;
+  }
+
+  // No key yet — we're the first. The server rejects this from non-creators
+  // (409) which closes the channel-creation race; if that happens we drop
+  // the half-generated key and wait for the creator's key to arrive.
   const symKey = await Crypto.generateSymKey();
   S.channelKeys[cid] = symKey;
-
-  // Distribute to all members who have public keys
-  await distributeChannelKey(cid, symKey);
+  try {
+    await distributeChannelKey(cid, symKey);
+  } catch (e) {
+    delete S.channelKeys[cid];
+    if (/409/.test(e.message) || /creator/i.test(e.message)) {
+      const err = new Error("Channel is still being set up by its creator. Try again in a moment.");
+      err.code = 'AWAITING_KEY';
+      throw err;
+    }
+    throw e;
+  }
   return symKey;
 }
 
@@ -797,6 +835,30 @@ async function distributeChannelKey(cid, symKey) {
   }
   if (Object.keys(bundles).length) {
     await api.post(`/channels/${cid}/keys`, bundles);
+  }
+}
+
+// If I hold the key for `cid`, re-wrap it for any members who don't have it
+// yet (new accounts, users who just completed E2E setup). Fire-and-forget;
+// the server emits rewrap_needed to trigger this and channel_key_available
+// to notify the recipients.
+async function rewrapChannelKey(cid) {
+  const symKey = S.channelKeys[cid];
+  if (!symKey) return;
+  try {
+    const needers = await api.get(`/channels/${cid}/members-needing-keys`);
+    if (!needers.length) return;
+    const bundles = {};
+    for (const m of needers) {
+      if (!m.public_key) continue;
+      const pub = await Crypto.importPublicKey(m.public_key);
+      bundles[m.user_id] = await Crypto.wrapSymKey(symKey, pub);
+    }
+    if (Object.keys(bundles).length) {
+      await api.post(`/channels/${cid}/keys`, bundles);
+    }
+  } catch (e) {
+    console.warn('Re-wrap failed for channel', cid, e);
   }
 }
 
@@ -887,11 +949,28 @@ async function openChannel(cid) {
   // Get/create encryption key
   let symKey;
   try { symKey = await getChannelKey(cid); }
-  catch (e) { toast('Could not load encryption key: ' + e.message, 'error'); return; }
+  catch (e) {
+    if (e.code === 'AWAITING_KEY') {
+      // Render a friendly waiting state; channel_key_available will refresh.
+      document.getElementById('messages-area').innerHTML =
+        '<div class="empty-state">' +
+          '<div class="es-icon">🔐</div>' +
+          '<div>Waiting for an existing member to share this channel’s encryption key.</div>' +
+          '<div class="text-sm text-dim mt-2">This usually takes a moment if any other member is online.</div>' +
+        '</div>';
+    } else {
+      toast('Could not load encryption key: ' + e.message, 'error');
+    }
+    return;
+  }
 
   // Load messages
   const msgs = await api.get(`/channels/${cid}/messages`);
   await renderMessages(msgs, symKey, 'channel');
+
+  // Catch-up: now that I have the key, wrap it for any members who joined
+  // while no key-holder was online to receive the rewrap_needed event.
+  rewrapChannelKey(cid);
 }
 
 async function openDM(userId) {
